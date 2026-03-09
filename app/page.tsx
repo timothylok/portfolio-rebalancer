@@ -1,26 +1,18 @@
-/*
-This version includes:
 
-Safe CSV parsing
-
-Live price loading support
-
-Total portfolio value
-
-Hardcoded target allocation
-
-Current weight vs target weight
-
-Drift amount
-
-Suggested shares to buy/sell
-
-Recommended trades table
-*/
 'use client';
 
 import React, { useMemo, useState } from 'react';
 import Papa from 'papaparse';
+import {
+  PieChart,
+  Pie,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  Legend,
+} from 'recharts';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface PortfolioItem {
   Ticker: string;
@@ -44,6 +36,8 @@ interface PriceResponse {
   error?: string;
 }
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 const TARGET_ALLOCATIONS: Record<string, number> = {
   VTI: 0.4,
   VXUS: 0.2,
@@ -51,6 +45,14 @@ const TARGET_ALLOCATIONS: Record<string, number> = {
   AAPL: 0.1,
   TSLA: 0.1,
 };
+
+const CHART_COLORS = ['#2563eb', '#16a34a', '#f97316', '#e11d48', '#0d9488'];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function getColor(index: number) {
+  return CHART_COLORS[index % CHART_COLORS.length];
+}
 
 function toNumber(value: unknown): number {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -75,11 +77,15 @@ function formatWholeCurrency(value?: number | null): string {
   })}`;
 }
 
+// ─── Component ───────────────────────────────────────────────────────────────
+
 export default function Home() {
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoadingPrices, setIsLoadingPrices] = useState(false);
   const [pricesLoaded, setPricesLoaded] = useState(false);
+
+  // ── CSV Upload ──────────────────────────────────────────────────────────────
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -93,7 +99,7 @@ export default function Home() {
       skipEmptyLines: true,
       complete: (results) => {
         try {
-          const cleanedPortfolio: PortfolioItem[] = (results.data || [])
+          const cleaned: PortfolioItem[] = (results.data || [])
             .map((row) => ({
               Ticker: String(row.Ticker ?? '').trim().toUpperCase(),
               Shares: toNumber(row.Shares),
@@ -106,25 +112,24 @@ export default function Home() {
                 Number.isFinite(item.Avg_Cost)
             );
 
-          if (cleanedPortfolio.length === 0) {
-            setPortfolio([]);
+          if (cleaned.length === 0) {
             setError('No valid rows found. Please use columns: Ticker, Shares, Avg_Cost');
             return;
           }
 
-          setPortfolio(cleanedPortfolio);
-          console.log('Parsed & cleaned portfolio:', cleanedPortfolio);
+          setPortfolio(cleaned);
         } catch (err) {
           console.error(err);
           setError('Failed to parse CSV file.');
         }
       },
       error: (err) => {
-        console.error(err);
         setError(err.message || 'CSV parsing failed.');
       },
     });
   };
+
+  // ── Fetch Prices ────────────────────────────────────────────────────────────
 
   const fetchLivePrices = async () => {
     if (portfolio.length === 0) return;
@@ -143,51 +148,42 @@ export default function Home() {
 
       const data: PriceResponse = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to fetch prices');
-      }
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch prices');
 
       const priceMap: Record<string, number> = {};
-
       for (const quote of data.quotes || []) {
         const symbol = String(quote.symbol || '').toUpperCase();
         const price = typeof quote.price === 'number' ? quote.price : NaN;
-
-        console.log('Quote:', symbol, price, quote.error);
-
         if (symbol && Number.isFinite(price)) {
           priceMap[symbol] = price;
         }
       }
 
-      const updatedPortfolio = portfolio.map((item) => {
+      const updated = portfolio.map((item) => {
         const currentPrice = priceMap[item.Ticker];
         const currentValue =
           typeof currentPrice === 'number' && Number.isFinite(currentPrice)
             ? currentPrice * item.Shares
             : undefined;
-
-        return {
-          ...item,
-          Current_Price: currentPrice,
-          Current_Value: currentValue,
-        };
+        return { ...item, Current_Price: currentPrice, Current_Value: currentValue };
       });
 
-      console.log('Updated portfolio:', updatedPortfolio);
-      setPortfolio(updatedPortfolio);
+      setPortfolio(updated);
       setPricesLoaded(true);
     } catch (err) {
-      console.error(err);
       setError(err instanceof Error ? err.message : 'Error fetching prices');
     } finally {
       setIsLoadingPrices(false);
     }
   };
 
-  const totalPortfolioValue = useMemo(() => {
-    return portfolio.reduce((sum, item) => sum + (item.Current_Value || 0), 0);
-  }, [portfolio]);
+  // ── Derived Data ─────────────────────────────────────────────────────────────
+  // NOTE: ALL useMemo hooks are INSIDE the component so they can access state
+
+  const totalPortfolioValue = useMemo(
+    () => portfolio.reduce((sum, item) => sum + (item.Current_Value || 0), 0),
+    [portfolio]
+  );
 
   const rebalancedPortfolio = useMemo(() => {
     if (portfolio.length === 0 || totalPortfolioValue === 0) return [];
@@ -213,8 +209,30 @@ export default function Home() {
     });
   }, [portfolio, totalPortfolioValue]);
 
+  const allocationChartData = useMemo(() => {
+    if (portfolio.length === 0 || totalPortfolioValue === 0) return [];
+    return portfolio
+      .filter((item) => (item.Current_Value || 0) > 0)
+      .map((item) => ({
+        name: item.Ticker,
+        value: item.Current_Value || 0,
+      }));
+  }, [portfolio, totalPortfolioValue]);
+
+  const targetChartData = useMemo(() => {
+    if (totalPortfolioValue === 0) return [];
+    return Object.entries(TARGET_ALLOCATIONS).map(([ticker, weight]) => ({
+      name: ticker,
+      value: totalPortfolioValue * weight,
+    }));
+  }, [totalPortfolioValue]);
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
+
+      {/* HEADER */}
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white shadow-sm">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center space-x-3">
@@ -226,21 +244,24 @@ export default function Home() {
               <p className="text-sm text-gray-500">Privacy-first portfolio analysis</p>
             </div>
           </div>
-
           <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">
-             {process.env.NEXT_PUBLIC_APP_BADGE }         
+            {process.env.NEXT_PUBLIC_APP_BADGE || 'Powered by OpenClaw'}
           </span>
         </div>
       </header>
 
+      {/* MAIN */}
       <main className="mx-auto flex max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 lg:flex-row lg:px-8">
+
+        {/* ── LEFT COLUMN ── */}
         <div className="w-full space-y-6 lg:w-1/3">
+
+          {/* Upload */}
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <h2 className="mb-4 text-lg font-semibold">1. Upload Portfolio</h2>
             <p className="mb-4 text-sm text-gray-500">
               Upload a CSV with columns: Ticker, Shares, Avg_Cost
             </p>
-
             <div className="rounded-lg border-2 border-dashed border-gray-300 p-6 text-center">
               <input
                 type="file"
@@ -249,7 +270,6 @@ export default function Home() {
                 className="w-full cursor-pointer text-sm text-gray-500 file:mr-4 file:rounded-full file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-blue-700 hover:file:bg-blue-100"
               />
             </div>
-
             <button
               onClick={fetchLivePrices}
               disabled={portfolio.length === 0 || isLoadingPrices}
@@ -259,31 +279,112 @@ export default function Home() {
             </button>
           </div>
 
+          {/* Target Allocation */}
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <h2 className="mb-4 text-lg font-semibold">3. Target Allocation</h2>
-            <div className="rounded border border-gray-100 bg-gray-50 p-4 text-sm text-gray-600">
-              <ul className="space-y-2">
-                {Object.entries(TARGET_ALLOCATIONS).map(([ticker, weight]) => (
-                  <li key={ticker} className="flex justify-between">
-                    <span className="font-medium">{ticker}</span>
-                    <span>{(weight * 100).toFixed(0)}%</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <ul className="space-y-2 rounded border border-gray-100 bg-gray-50 p-4 text-sm text-gray-600">
+              {Object.entries(TARGET_ALLOCATIONS).map(([ticker, weight]) => (
+                <li key={ticker} className="flex justify-between">
+                  <span className="font-medium">{ticker}</span>
+                  <span>{(weight * 100).toFixed(0)}%</span>
+                </li>
+              ))}
+            </ul>
           </div>
 
+          {/* Summary */}
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <h2 className="mb-2 text-lg font-semibold">Portfolio Summary</h2>
             <p className="text-sm text-gray-500">Total current value</p>
             <p className="mt-2 text-2xl font-bold text-gray-900">
-              {formatWholeCurrency(totalPortfolioValue)}
+              {totalPortfolioValue > 0 ? formatWholeCurrency(totalPortfolioValue) : '—'}
             </p>
           </div>
+
         </div>
 
+        {/* ── RIGHT COLUMN ── */}
         <div className="w-full space-y-6 lg:w-2/3">
-          <div className="min-h-[400px] rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+
+          {/* Allocation Charts */}
+          <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Allocation Overview</h2>
+              {pricesLoaded && (
+                <span className="text-xs text-gray-400">Based on latest prices</span>
+              )}
+            </div>
+
+            {allocationChartData.length > 0 ? (
+              <div className="grid gap-6 md:grid-cols-2">
+
+                {/* Current Pie */}
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-gray-700">Current Allocation</h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart margin={{ top: 20, right: 30, bottom: 20, left: 30 }}>
+                        <Pie
+                          data={allocationChartData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={65}
+                          label={({ name, percent }) =>
+                            `${name} ${(percent * 100).toFixed(0)}%`
+                          }
+                          labelLine={true}
+                        >
+                          {allocationChartData.map((entry, index) => (
+                            <Cell key={`current-${entry.name}`} fill={getColor(index)} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value: number) => formatWholeCurrency(value)} />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Target Pie */}
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-gray-700">Target Allocation</h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={targetChartData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={80}
+                          label={({ name, percent }) =>
+                            `${name} ${(percent * 100).toFixed(0)}%`
+                          }
+                        >
+                          {targetChartData.map((entry, index) => (
+                            <Cell key={`target-${entry.name}`} fill={getColor(index)} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value: number) => formatWholeCurrency(value)} />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+              </div>
+            ) : (
+              <p className="py-8 text-center text-sm text-gray-400">
+                Upload a portfolio and fetch prices to see allocation charts.
+              </p>
+            )}
+          </div>
+
+          {/* Current Portfolio Table */}
+          <div className="min-h-[300px] rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">Current Portfolio</h2>
               {pricesLoaded && (
@@ -302,24 +403,18 @@ export default function Home() {
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Ticker
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Shares
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Avg Cost
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Current Price
-                      </th>
-                      <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Current Value
-                      </th>
+                      {['Ticker', 'Shares', 'Avg Cost', 'Current Price', 'Current Value'].map(
+                        (col) => (
+                          <th
+                            key={col}
+                            className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500"
+                          >
+                            {col}
+                          </th>
+                        )
+                      )}
                     </tr>
                   </thead>
-
                   <tbody className="divide-y divide-gray-200 bg-white">
                     {portfolio.map((item, index) => (
                       <tr key={`${item.Ticker}-${index}`}>
@@ -330,10 +425,10 @@ export default function Home() {
                           {Number(item.Shares).toLocaleString()}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                          {formatCurrency(item.Avg_Cost, 2)}
+                          {formatCurrency(item.Avg_Cost)}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                          {formatCurrency(item.Current_Price, 2)}
+                          {formatCurrency(item.Current_Price)}
                         </td>
                         <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium text-gray-900">
                           {formatWholeCurrency(item.Current_Value)}
@@ -344,12 +439,13 @@ export default function Home() {
                 </table>
               </div>
             ) : (
-              <p className="flex h-48 items-center justify-center font-medium text-gray-400">
+              <p className="flex h-40 items-center justify-center text-sm text-gray-400">
                 Upload a CSV to view your portfolio
               </p>
             )}
           </div>
 
+          {/* Recommended Trades */}
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <h2 className="mb-4 text-lg font-semibold">Recommended Trades</h2>
 
@@ -358,62 +454,50 @@ export default function Home() {
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Ticker
-                      </th>
-                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Current %
-                      </th>
-                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Target %
-                      </th>
-                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Drift $
-                      </th>
-                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Drift %
-                      </th>
-                      <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Shares
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                        Action
-                      </th>
+                      {['Ticker', 'Current %', 'Target %', 'Drift $', 'Drift %', 'Shares', 'Action'].map(
+                        (col) => (
+                          <th
+                            key={col}
+                            className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500"
+                          >
+                            {col}
+                          </th>
+                        )
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 bg-white">
                     {rebalancedPortfolio.map((item) => {
                       const driftValue = item.Drift_Value || 0;
                       const action =
-                        driftValue > 0 ? 'Buy' : driftValue < 0 ? 'Sell' : 'Hold';
-
+                        driftValue > 50 ? 'Buy' : driftValue < -50 ? 'Sell' : 'Hold';
                       return (
                         <tr key={item.Ticker}>
                           <td className="px-4 py-4 text-sm font-medium text-gray-900">
                             {item.Ticker}
                           </td>
-                          <td className="px-4 py-4 text-right text-sm text-gray-500">
+                          <td className="px-4 py-4 text-sm text-gray-500">
                             {((item.Current_Weight || 0) * 100).toFixed(1)}%
                           </td>
-                          <td className="px-4 py-4 text-right text-sm text-gray-500">
+                          <td className="px-4 py-4 text-sm text-gray-500">
                             {((item.Target_Weight || 0) * 100).toFixed(1)}%
                           </td>
-                          <td className="px-4 py-4 text-right text-sm text-gray-500">
+                          <td className="px-4 py-4 text-sm text-gray-500">
                             {formatWholeCurrency(item.Drift_Value)}
                           </td>
-                          <td className="px-4 py-4 text-right text-sm text-gray-500">
+                          <td className="px-4 py-4 text-sm text-gray-500">
                             {((item.Drift_Percent || 0) * 100).toFixed(1)}%
                           </td>
-                          <td className="px-4 py-4 text-right text-sm text-gray-500">
-                            {(item.Suggested_Shares || 0).toFixed(2)}
+                          <td className="px-4 py-4 text-sm text-gray-500">
+                            {Math.abs(item.Suggested_Shares || 0).toFixed(2)}
                           </td>
                           <td
-                            className={`px-4 py-4 text-sm font-semibold ${
+                            className={`px-4 py-4 text-sm font-bold ${
                               action === 'Buy'
                                 ? 'text-green-600'
                                 : action === 'Sell'
                                 ? 'text-red-600'
-                                : 'text-gray-500'
+                                : 'text-gray-400'
                             }`}
                           >
                             {action}
@@ -425,12 +509,13 @@ export default function Home() {
                 </table>
               </div>
             ) : (
-              <p className="text-gray-400">
+              <p className="text-sm text-gray-400">
                 Fetch live prices to generate trade recommendations.
               </p>
             )}
           </div>
 
+          {/* AI Advisor */}
           <div className="min-h-[150px] rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50 to-indigo-50 p-6">
             <h3 className="mb-2 flex items-center text-lg font-semibold text-blue-900">
               <svg
@@ -438,7 +523,6 @@ export default function Home() {
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
-                xmlns="http://www.w3.org/2000/svg"
               >
                 <path
                   strokeLinecap="round"
@@ -453,6 +537,7 @@ export default function Home() {
               Next step: generate natural-language rebalancing advice using OpenClaw.
             </p>
           </div>
+
         </div>
       </main>
     </div>
