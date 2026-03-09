@@ -36,6 +36,17 @@ interface PriceResponse {
   error?: string;
 }
 
+interface TLHOpportunity {
+  Ticker: string;
+  Shares: number;
+  Avg_Cost: number;
+  Current_Price: number;
+  Unrealized_Loss: number;
+  Tax_Saving: number;
+  Loss_Per_Share: number;
+}
+
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const TARGET_ALLOCATIONS: Record<string, number> = {
@@ -47,6 +58,9 @@ const TARGET_ALLOCATIONS: Record<string, number> = {
 };
 
 const CHART_COLORS = ['#2563eb', '#16a34a', '#f97316', '#e11d48', '#0d9488'];
+const TAX_BRACKET = 0.25; // 25% assumed tax bracket — user can change this later
+const TLH_THRESHOLD = 100; // Only flag losses greater than $100
+
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -227,6 +241,37 @@ export default function Home() {
     }));
   }, [totalPortfolioValue]);
 
+  const tlhOpportunities = useMemo((): TLHOpportunity[] => {
+  if (portfolio.length === 0 || !pricesLoaded) return [];
+
+  return portfolio
+    .filter((item) => {
+      const currentPrice = item.Current_Price;
+      const avgCost = item.Avg_Cost;
+      if (!currentPrice || !avgCost) return false;
+
+      const unrealizedLoss = (currentPrice - avgCost) * item.Shares;
+      return unrealizedLoss < -TLH_THRESHOLD; // Only losses beyond threshold
+    })
+    .map((item) => {
+      const currentPrice = item.Current_Price!;
+      const unrealizedLoss = (currentPrice - item.Avg_Cost) * item.Shares;
+      const taxSaving = Math.abs(unrealizedLoss) * TAX_BRACKET;
+      const lossPerShare = currentPrice - item.Avg_Cost;
+
+      return {
+        Ticker: item.Ticker,
+        Shares: item.Shares,
+        Avg_Cost: item.Avg_Cost,
+        Current_Price: currentPrice,
+        Unrealized_Loss: unrealizedLoss,
+        Tax_Saving: taxSaving,
+        Loss_Per_Share: lossPerShare,
+      };
+    })
+    .sort((a, b) => a.Unrealized_Loss - b.Unrealized_Loss); // Worst losses first
+}, [portfolio, pricesLoaded]);
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -383,6 +428,7 @@ export default function Home() {
             )}
           </div>
 
+
           {/* Current Portfolio Table */}
           <div className="min-h-[300px] rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
@@ -514,6 +560,111 @@ export default function Home() {
               </p>
             )}
           </div>
+
+{/* Tax-Loss Harvesting Scanner */}
+<div className="rounded-xl border border-amber-100 bg-white p-6 shadow-sm">
+  <div className="mb-4 flex items-center justify-between">
+    <div className="flex items-center space-x-2">
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+        ⚠️
+      </div>
+      <h2 className="text-lg font-semibold">Tax-Loss Harvesting</h2>
+    </div>
+    {tlhOpportunities.length > 0 && (
+      <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+        {tlhOpportunities.length} opportunity{tlhOpportunities.length > 1 ? 's' : ''} found
+      </span>
+    )}
+  </div>
+
+  {!pricesLoaded ? (
+    <p className="text-sm text-gray-400">
+      Fetch live prices to scan for tax-loss harvesting opportunities.
+    </p>
+  ) : tlhOpportunities.length === 0 ? (
+    <div className="flex items-center space-x-3 rounded-lg border border-green-100 bg-green-50 p-4">
+      <span className="text-2xl">✅</span>
+      <div>
+        <p className="text-sm font-medium text-green-800">No significant losses detected</p>
+        <p className="text-xs text-green-600">
+          All positions are within the ${TLH_THRESHOLD} threshold
+        </p>
+      </div>
+    </div>
+  ) : (
+    <>
+      {/* Summary banner */}
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm font-semibold text-amber-800">
+          Total unrealized losses:{' '}
+          <span className="text-red-600">
+            {formatWholeCurrency(
+              tlhOpportunities.reduce((sum, t) => sum + t.Unrealized_Loss, 0)
+            )}
+          </span>
+        </p>
+        <p className="mt-1 text-sm font-semibold text-amber-800">
+          Estimated tax savings at {TAX_BRACKET * 100}% bracket:{' '}
+          <span className="text-green-700">
+            {formatWholeCurrency(
+              tlhOpportunities.reduce((sum, t) => sum + t.Tax_Saving, 0)
+            )}
+          </span>
+        </p>
+      </div>
+
+      {/* Opportunities table */}
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              {['Ticker', 'Avg Cost', 'Current Price', 'Loss/Share', 'Unrealized Loss', 'Est. Tax Saving'].map(
+                (col) => (
+                  <th
+                    key={col}
+                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500"
+                  >
+                    {col}
+                  </th>
+                )
+              )}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 bg-white">
+            {tlhOpportunities.map((item) => (
+              <tr key={item.Ticker} className="bg-red-50/30">
+                <td className="px-4 py-4 text-sm font-bold text-gray-900">
+                  {item.Ticker}
+                </td>
+                <td className="px-4 py-4 text-sm text-gray-500">
+                  {formatCurrency(item.Avg_Cost)}
+                </td>
+                <td className="px-4 py-4 text-sm text-red-600 font-medium">
+                  {formatCurrency(item.Current_Price)}
+                </td>
+                <td className="px-4 py-4 text-sm text-red-600">
+                  {formatCurrency(item.Loss_Per_Share)}
+                </td>
+                <td className="px-4 py-4 text-sm font-bold text-red-600">
+                  {formatWholeCurrency(item.Unrealized_Loss)}
+                </td>
+                <td className="px-4 py-4 text-sm font-bold text-green-600">
+                  {formatWholeCurrency(item.Tax_Saving)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Disclaimer */}
+      <p className="mt-3 text-xs text-gray-400">
+        * Estimates only. Consult a tax professional. Beware of 30-day wash-sale rules.
+      </p>
+    </>
+  )}
+</div>
+
 
           {/* AI Advisor */}
           <div className="min-h-[150px] rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50 to-indigo-50 p-6">
