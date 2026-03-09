@@ -99,6 +99,11 @@ export default function Home() {
   const [isLoadingPrices, setIsLoadingPrices] = useState(false);
   const [pricesLoaded, setPricesLoaded] = useState(false);
 
+    // ── ADD HERE ──
+  const [aiAdvice, setAiAdvice] = useState<string | null>(null);
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
   // ── CSV Upload ──────────────────────────────────────────────────────────────
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -190,6 +195,53 @@ export default function Home() {
       setIsLoadingPrices(false);
     }
   };
+
+  const fetchAIAdvice = async () => {
+  if (rebalancedPortfolio.length === 0) return;
+
+  try {
+    setIsLoadingAI(true);
+    setAiError(null);
+    setAiAdvice(null);
+
+    // Build a plain-text summary to send to Ollama
+    const lines = rebalancedPortfolio.map((item) => {
+      const action =
+        (item.Drift_Value || 0) > 50
+          ? 'BUY'
+          : (item.Drift_Value || 0) < -50
+          ? 'SELL'
+          : 'HOLD';
+      return `${item.Ticker}: Current ${((item.Current_Weight || 0) * 100).toFixed(1)}%, Target ${((item.Target_Weight || 0) * 100).toFixed(1)}%, Drift $${(item.Drift_Value || 0).toFixed(0)}, Action: ${action}`;
+    });
+
+    const tlhLines =
+      tlhOpportunities.length > 0
+        ? `\nTax-Loss Harvesting Opportunities:\n${tlhOpportunities
+            .map((t) => `${t.Ticker}: Unrealized loss $${t.Unrealized_Loss.toFixed(0)}, Est. tax saving $${t.Tax_Saving.toFixed(0)}`)
+            .join('\n')}`
+        : '\nNo tax-loss harvesting opportunities detected.';
+
+    const portfolioSummary = `Total Portfolio Value: $${totalPortfolioValue.toFixed(0)}\n\nHoldings:\n${lines.join('\n')}${tlhLines}`;
+
+    const res = await fetch('/api/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ portfolioSummary }),
+    });
+
+    const data = await res.json() as { advice?: string; error?: string };
+
+    if (!res.ok) throw new Error(data.error || 'AI request failed');
+
+    setAiAdvice(data.advice || null);
+  } catch (err) {
+    console.error(err);
+    setAiError(err instanceof Error ? err.message : 'AI request failed');
+  } finally {
+    setIsLoadingAI(false);
+  }
+};
 
   // ── Derived Data ─────────────────────────────────────────────────────────────
   // NOTE: ALL useMemo hooks are INSIDE the component so they can access state
@@ -666,28 +718,60 @@ export default function Home() {
 </div>
 
 
-          {/* AI Advisor */}
-          <div className="min-h-[150px] rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50 to-indigo-50 p-6">
-            <h3 className="mb-2 flex items-center text-lg font-semibold text-blue-900">
-              <svg
-                className="mr-2 h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M13 10V3L4 14h7v7l9-11h-7z"
-                />
-              </svg>
-              AI Advisor Insights
-            </h3>
+{/* AI Advisor */}
+<div className="min-h-[150px] rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50 to-indigo-50 p-6">
+  <div className="mb-4 flex items-center justify-between">
+    <h3 className="flex items-center text-lg font-semibold text-blue-900">
+      <svg className="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+      AI Advisor Insights
+    </h3>
+
+    <button
+      onClick={fetchAIAdvice}
+      disabled={rebalancedPortfolio.length === 0 || isLoadingAI}
+      className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+    >
+      {isLoadingAI ? (
+        <>
+          <svg className="mr-2 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          Analyzing...
+        </>
+      ) : (
+        '✨ Get AI Advice'
+      )}
+    </button>
+  </div>
+
+  {aiError && (
+    <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-600">
+      {aiError}
+    </div>
+  )}
+
+          {aiAdvice ? (
+            <div className="space-y-2">
+              {aiAdvice
+                .split('\n')
+                .filter((line) => line.trim().length > 0)
+                .map((line, index) => (
+                  <p key={index} className="text-sm leading-relaxed text-blue-900">
+                    {line}
+                  </p>
+                ))}
+            </div>
+          ) : (
             <p className="text-sm text-blue-800 opacity-70">
-              Next step: generate natural-language rebalancing advice using OpenClaw.
+              {rebalancedPortfolio.length === 0
+                ? 'Fetch live prices first, then click Get AI Advice.'
+                : 'Click "Get AI Advice" to generate personalized rebalancing insights.'}
             </p>
-          </div>
+          )}
+        </div>
 
         </div>
       </main>
